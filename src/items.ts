@@ -14,11 +14,40 @@ export interface Item {
   sessionId?: string;
   startup?: string;
   windows?: number;
+  /** The Rex host label; absent for sessions on this Mac. */
+  server?: string;
 }
 
 export interface RexSession {
   session_id: string;
   label: string;
+  /** Set only when the session came from a remote host. */
+  server?: string;
+}
+
+/** One entry from `rex hosts --json`; only the label is needed to list its sessions. */
+export interface RexHost {
+  host?: {
+    id?: string;
+    label?: string;
+    endpoints?: string[];
+  };
+  from?: string;
+  held?: boolean;
+}
+
+export interface RexHosts {
+  home?: unknown;
+  hosts?: RexHost[];
+  warnings?: unknown[];
+}
+
+/** Items plus the hosts or local server that could not be reached. */
+export interface LoadedItems {
+  /** Configured remote host labels, including empty or unreachable hosts. */
+  hosts: string[];
+  items: Item[];
+  warnings: string[];
 }
 
 export interface SeshEntry {
@@ -27,14 +56,15 @@ export interface SeshEntry {
   StartupCommand?: string;
 }
 
-export function toRexItem(session: RexSession, windows?: number): Item {
+export function toRexItem(session: RexSession, windows?: number, server?: string): Item {
   return {
-    id: `rex:${session.session_id}`,
+    id: server ? `rex:${server}:${session.session_id}` : `rex:${session.session_id}`,
     kind: "rex",
     title: session.label,
     label: session.label,
     sessionId: session.session_id,
     windows,
+    server,
   };
 }
 
@@ -61,19 +91,25 @@ export function toZoxideItems(dirs: string[], home: string): Item[] {
 
 const trimSlash = (path?: string) => path?.replace(/\/+$/, "");
 
-/** Open sessions first; sesh entries and directories that would duplicate them are left out. */
+/**
+ * Open sessions first; sesh entries and directories that would duplicate them are left out.
+ * Only local sessions hide a sesh entry: sesh and zoxide create sessions on this Mac, so a
+ * remote session is never the session those entries would open.
+ */
 export function mergeItems(rex: Item[], sesh: Item[], dirs: Item[]): Item[] {
-  const openLabels = new Set(rex.map((i) => i.label));
-  const visibleSesh = sesh.filter((i) => !openLabels.has(i.label));
+  const localLabels = new Set(rex.filter((i) => !i.server).map((i) => i.label));
+  const visibleSesh = sesh.filter((i) => !localLabels.has(i.label));
   const seshPaths = new Set(sesh.map((i) => trimSlash(i.path)));
   const visibleDirs = dirs.filter((i) => !seshPaths.has(trimSlash(i.path)));
   const seen = new Set<string>();
   return [...rex, ...visibleSesh, ...visibleDirs].filter((i) => !seen.has(i.id) && seen.add(i.id));
 }
 
-/** The open session an item refers to: its own, or one already created with its label. */
+/** The open session an item refers to: its own, or a local session already created with its label. */
 export function existingSessionId(item: Item, open: RexSession[]): string | undefined {
-  return item.sessionId ?? open.find((session) => session.label === item.label)?.session_id;
+  if (item.sessionId) return item.sessionId;
+  if (item.server) return undefined;
+  return open.find((session) => !session.server && session.label === item.label)?.session_id;
 }
 
 /** Arguments for `rex new`; a startup command runs first and then leaves an interactive shell. */
@@ -90,4 +126,11 @@ export function expandPath(searchPath: string, home: string): string {
     .split(":")
     .map((entry) => (entry === "~" || entry.startsWith("~/") ? home + entry.slice(1) : entry))
     .join(":");
+}
+
+/** Host filters keep local creation entries off remote hosts while preserving session order. */
+export function filterItemsByHost(items: Item[], filter: string): Item[] {
+  return items.filter((item) =>
+    filter === "all" ? true : filter === "local" ? !item.server : `remote:${item.server}` === filter,
+  );
 }
