@@ -6,10 +6,12 @@ import { describe, expect, it } from "vitest";
 import {
   existingSessionId,
   expandPath,
+  filterItemsByHost,
   mergeItems,
   newSessionArgs,
   toRexItem,
   toSeshItems,
+  toTabSummaries,
   toZoxideItems,
 } from "./items";
 import { loadItems, runner } from "./cli";
@@ -47,6 +49,87 @@ describe("mergeItems", () => {
     const ids = mergeItems(rex, sesh, dirs).map((i) => i.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it("keeps a remote session with the same label as a local one", () => {
+    const remote = toRexItem({ session_id: "session:1", label: "chezmoi" }, 2, "studio");
+    const items = mergeItems([...rex, remote], sesh, dirs);
+    expect(items.filter((i) => i.title === "chezmoi").map((i) => i.server)).toEqual([undefined, "studio"]);
+  });
+
+  it("does not hide a sesh entry behind a remote session with the same label", () => {
+    const remote = toRexItem({ session_id: "session:1", label: "chezmoi" }, 2, "studio");
+    const items = mergeItems([remote], sesh, dirs);
+    expect(items.filter((i) => i.title === "chezmoi").map((i) => i.kind)).toEqual(["rex", "sesh"]);
+  });
+
+  it("gives the same session id on different hosts a different id", () => {
+    const first = toRexItem({ session_id: "session:1", label: "same" }, 1, "studio");
+    const second = toRexItem({ session_id: "session:1", label: "same" }, 1, "laptop");
+    const items = mergeItems([first, second], [], []);
+    expect(items).toHaveLength(2);
+    expect(new Set(items.map((i) => i.id)).size).toBe(2);
+  });
+});
+
+describe("toTabSummaries", () => {
+  it("keeps tab and pane labels in Rex's order and marks the active window", () => {
+    const tabs = toTabSummaries(
+      [
+        {
+          window_id: "window:one",
+          label: "Server",
+          layers: [{ blocks: [{ label: "api" }, { label: "logs" }] }],
+        },
+        { window_id: "window:two", layers: [{ blocks: [{ label: "test" }] }] },
+      ],
+      "window:two",
+    );
+
+    expect(tabs).toEqual([
+      {
+        windowId: "window:one",
+        label: "Server",
+        active: false,
+        paneLabels: ["api", "logs"],
+        paneCount: 2,
+        panes: [
+          { blockId: undefined, label: "api", terminal: false },
+          { blockId: undefined, label: "logs", terminal: false },
+        ],
+      },
+      {
+        windowId: "window:two",
+        label: "Tab 2",
+        active: true,
+        paneLabels: ["test"],
+        paneCount: 1,
+        panes: [{ blockId: undefined, label: "test", terminal: false }],
+      },
+    ]);
+  });
+
+  it("ignores malformed windows instead of losing the whole session", () => {
+    const tabs = toTabSummaries(
+      [null, "window", { label: "no id" }, { window_id: "window:ok", layers: [{ blocks: [{ label: 7 }] }] }],
+      undefined,
+    );
+
+    expect(tabs).toEqual([
+      {
+        windowId: "window:ok",
+        label: "Tab 4",
+        active: false,
+        paneLabels: ["Pane 1"],
+        paneCount: 1,
+        panes: [{ blockId: undefined, label: "Pane 1", terminal: false }],
+      },
+    ]);
+  });
+
+  it("returns nothing when the view has no window array", () => {
+    expect(toTabSummaries(null)).toEqual([]);
+    expect(toTabSummaries({ windows: [] })).toEqual([]);
+  });
 });
 
 describe("existingSessionId", () => {
@@ -64,6 +147,16 @@ describe("existingSessionId", () => {
   it("returns nothing when no session has that label", () => {
     const [dir] = toZoxideItems(["/home/me/src/app"], "/home/me");
     expect(existingSessionId(dir, open)).toBeUndefined();
+  });
+
+  it("ignores a remote session with the item's label", () => {
+    const [entry] = toSeshItems([{ Name: "Downloads 📥", Path: "/home/me/Downloads" }]);
+    expect(existingSessionId(entry, [{ ...open[0], server: "studio" }])).toBeUndefined();
+  });
+
+  it("keeps the item's own remote session id", () => {
+    const remote = toRexItem({ session_id: "session:remote", label: "x" }, 1, "studio");
+    expect(existingSessionId(remote, open)).toBe("session:remote");
   });
 });
 
@@ -107,12 +200,32 @@ function installed(program: string): boolean {
 }
 
 describe.runIf(installed("rex") && installed("sesh") && installed("zoxide"))("on this machine", () => {
-  it("loads real sessions, sesh entries and directories", async () => {
+  it("loads real local sessions, sesh entries and directories", async () => {
     const run = runner(process.env.PATH ?? "", "rex");
-    const items = await loadItems(run, homedir(), true);
+    const { items } = await loadItems(run, homedir(), true, false, true);
     const live = JSON.parse(execFileSync("rex", ["ls", "--json"], { encoding: "utf8" })).sessions;
     expect(items.filter((i) => i.kind === "rex")).toHaveLength(live.length);
     expect(items.every((i) => i.title && i.id)).toBe(true);
     expect(new Set(items.map((i) => i.id)).size).toBe(items.length);
+  });
+});
+
+describe("filterItemsByHost", () => {
+  const items = [
+    toRexItem({ session_id: "session:local", label: "local" }),
+    toRexItem({ session_id: "session:remote", label: "remote" }, 1, "studio"),
+    ...toSeshItems([{ Name: "project", Path: "/work/project" }]),
+    ...toZoxideItems(["/work/dir"], "/work"),
+  ];
+
+  it("keeps all hosts in their existing order", () => {
+    expect(filterItemsByHost(items, "all")).toEqual(items);
+  });
+  it("keeps local sessions and creation entries on This Mac", () => {
+    expect(filterItemsByHost(items, "local").map((item) => item.kind)).toEqual(["rex", "sesh", "dir"]);
+  });
+  it("shows only sessions owned by the selected remote host", () => {
+    expect(filterItemsByHost(items, "remote:studio")).toEqual([items[1]]);
+    expect(filterItemsByHost(items, "remote:missing")).toEqual([]);
   });
 });

@@ -50,6 +50,24 @@
       "label": "Include zoxide directories",
       "description": "List zoxide's directories so any of them can become a session.",
       "default": true
+    },
+    {
+      "name": "includeSesh",
+      "type": "checkbox",
+      "required": false,
+      "title": "Sesh Config",
+      "label": "Include sesh config entries",
+      "description": "List entries from sesh that can create a local session.",
+      "default": false
+    },
+    {
+      "name": "includeRemote",
+      "type": "checkbox",
+      "required": false,
+      "title": "Remote Hosts",
+      "label": "Include remote hosts",
+      "description": "List sessions from the hosts configured in Rex's host list.",
+      "default": true
     }
   ],
   "dependencies": {
